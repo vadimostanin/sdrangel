@@ -29,7 +29,6 @@
 #include "util/simpleserializer.h"
 #include "mainwindow.h"
 
-#include "lorademod.h"
 #include "lorademodgui.h"
 
 LoRaDemodGUI* LoRaDemodGUI::create(PluginAPI* pluginAPI, DeviceUISet *deviceUISet, BasebandSampleSink *rxChannel)
@@ -111,27 +110,9 @@ bool LoRaDemodGUI::handleMessage(const Message& message)
     else if (LoRaDemod::MsgReportDecodeBytes::match(message))
     {
         const LoRaDemod::MsgReportDecodeBytes& msg = (LoRaDemod::MsgReportDecodeBytes&) message;
-        QByteArray bytes = msg.getBytes();
-        ui->syncWord->setText((tr("%1").arg(msg.getSyncWord(), 2, 16)));
-        ui->sText->setText(tr("%1").arg(msg.getSingalDb(), 0, 'f', 1));
-        ui->snrText->setText(tr("%1").arg(msg.getSingalDb() - msg.getNoiseDb(), 0, 'f', 1));
-
-        if (m_settings.m_hasHeader)
-        {
-            ui->fecParity->setValue(msg.getNbParityBits());
-            ui->fecParityText->setText(tr("%1").arg(msg.getNbParityBits()));
-            ui->crc->setChecked(msg.getHasCRC());
-            ui->packetLength->setValue(msg.getPacketSize());
-            ui->packetLengthText->setText(tr("%1").arg(msg.getPacketSize()));
-            displayBytes(bytes, msg.getPacketSize(), msg.getHasCRC());
-        }
-        else
-        {
-            displayBytes(bytes, m_settings.m_packetLength, m_settings.m_hasCRC);
-        }
 
         if (m_settings.m_codingScheme == LoRaDemodSettings::CodingLoRa) {
-            displayLoRaStatus(msg.getHeaderParityStatus(), msg.getHeaderCRCStatus(), msg.getPayloadParityStatus(), msg.getPayloadCRCStatus());
+            showLoRaMessage(msg);
         }
 
         return true;
@@ -139,10 +120,11 @@ bool LoRaDemodGUI::handleMessage(const Message& message)
     else if (LoRaDemod::MsgReportDecodeString::match(message))
     {
         const LoRaDemod::MsgReportDecodeString& msg = (LoRaDemod::MsgReportDecodeString&) message;
-        addText(msg.getString());
-        ui->syncWord->setText((tr("%1").arg(msg.getSyncWord(), 2, 16)));
-        ui->sText->setText(tr("%1").arg(msg.getSingalDb(), 0, 'f', 1));
-        ui->snrText->setText(tr("%1").arg(msg.getSingalDb() - msg.getNoiseDb(), 0, 'f', 1));
+
+        if ((m_settings.m_codingScheme == LoRaDemodSettings::CodingASCII)
+         || (m_settings.m_codingScheme == LoRaDemodSettings::CodingTTY)) {
+             showTextMessage(msg);
+        }
 
         return true;
     }
@@ -246,6 +228,7 @@ void LoRaDemodGUI::on_clear_clicked(bool checked)
 {
     (void) checked;
     ui->messageText->clear();
+    ui->hexText->clear();
 }
 
 void LoRaDemodGUI::on_eomSquelch_valueChanged(int value)
@@ -293,12 +276,6 @@ void LoRaDemodGUI::on_fecParity_valueChanged(int value)
 void LoRaDemodGUI::on_crc_stateChanged(int state)
 {
     m_settings.m_hasCRC = (state == Qt::Checked);
-    applySettings();
-}
-
-void LoRaDemodGUI::on_errorCheck_stateChanged(int state)
-{
-    m_settings.m_errorCheck = (state == Qt::Checked);
     applySettings();
 }
 
@@ -426,7 +403,6 @@ void LoRaDemodGUI::displaySettings()
     ui->messageLengthText->setText(tr("%1").arg(m_settings.m_nbSymbolsMax));
     ui->messageLength->setValue(m_settings.m_nbSymbolsMax);
     ui->header->setChecked(m_settings.m_hasHeader);
-    ui->errorCheck->setChecked(m_settings.m_errorCheck);
 
     if (!m_settings.m_hasHeader)
     {
@@ -453,12 +429,14 @@ void LoRaDemodGUI::displaySquelch()
     }
 }
 
-void LoRaDemodGUI::displayLoRaStatus(bool headerParityStatus, bool headerCRCStatus, bool payloadParityStatus, bool payloadCRCStatus)
+void LoRaDemodGUI::displayLoRaStatus(int headerParityStatus, bool headerCRCStatus, int payloadParityStatus, bool payloadCRCStatus)
 {
-    if (m_settings.m_hasHeader && headerParityStatus) {
+    if (m_settings.m_hasHeader && (headerParityStatus == (int) ParityOK)) {
         ui->headerHammingStatus->setStyleSheet("QLabel { background-color : green; }");
-    } else if (m_settings.m_hasHeader && !headerParityStatus) {
+    } else if (m_settings.m_hasHeader && (headerParityStatus == (int) ParityError)) {
         ui->headerHammingStatus->setStyleSheet("QLabel { background-color : red; }");
+    } else if (m_settings.m_hasHeader && (headerParityStatus == (int) ParityCorrected)) {
+        ui->headerHammingStatus->setStyleSheet("QLabel { background-color : blue; }");
     } else {
         ui->headerHammingStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
     }
@@ -471,10 +449,14 @@ void LoRaDemodGUI::displayLoRaStatus(bool headerParityStatus, bool headerCRCStat
         ui->headerCRCStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
     }
 
-    if (payloadParityStatus) {
+    if (payloadParityStatus == (int) ParityOK) {
         ui->payloadFECStatus->setStyleSheet("QLabel { background-color : green; }");
-    } else {
+    } else if (payloadParityStatus == (int) ParityError) {
         ui->payloadFECStatus->setStyleSheet("QLabel { background-color : red; }");
+    } else if (payloadParityStatus == (int) ParityCorrected) {
+        ui->payloadFECStatus->setStyleSheet("QLabel { background-color : blue; }");
+    } else {
+        ui->payloadFECStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
     }
 
     if (payloadCRCStatus) {
@@ -490,6 +472,8 @@ void LoRaDemodGUI::resetLoRaStatus()
     ui->headerCRCStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
     ui->payloadFECStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
     ui->payloadCRCStatus->setStyleSheet("QLabel { background:rgb(79,79,79); }");
+    ui->nbSymbolsText->setText("---");
+    ui->nbCodewordsText->setText("---");
 }
 
 void LoRaDemodGUI::setBandwidths()
@@ -509,6 +493,50 @@ void LoRaDemodGUI::setBandwidths()
     }
 }
 
+void LoRaDemodGUI::showLoRaMessage(const LoRaDemod::MsgReportDecodeBytes& msg)
+{
+    QByteArray bytes = msg.getBytes();
+
+    ui->syncWord->setText((tr("%1").arg(msg.getSyncWord(), 2, 16)));
+    ui->sText->setText(tr("%1").arg(msg.getSingalDb(), 0, 'f', 1));
+    ui->snrText->setText(tr("%1").arg(msg.getSingalDb() - msg.getNoiseDb(), 0, 'f', 1));
+    unsigned int packetLength;
+
+    if (m_settings.m_hasHeader)
+    {
+        ui->fecParity->setValue(msg.getNbParityBits());
+        ui->fecParityText->setText(tr("%1").arg(msg.getNbParityBits()));
+        ui->crc->setChecked(msg.getHasCRC());
+        ui->packetLength->setValue(msg.getPacketSize());
+        ui->packetLengthText->setText(tr("%1").arg(msg.getPacketSize()));
+        packetLength =  msg.getPacketSize();
+    }
+    else
+    {
+        packetLength = m_settings.m_packetLength;
+    }
+
+    displayBytes(bytes, packetLength);
+
+    QByteArray bytesCopy(bytes);
+    bytesCopy.truncate(packetLength);
+    bytesCopy.replace('\0', " ");
+    QString str = QString(bytesCopy.toStdString().c_str());
+    addText(str);
+
+    displayLoRaStatus(msg.getHeaderParityStatus(), msg.getHeaderCRCStatus(), msg.getPayloadParityStatus(), msg.getPayloadCRCStatus());
+    ui->nbSymbolsText->setText(tr("%1").arg(msg.getNbSymbols()));
+    ui->nbCodewordsText->setText(tr("%1").arg(msg.getNbCodewords()));
+}
+
+void LoRaDemodGUI::showTextMessage(const LoRaDemod::MsgReportDecodeString& msg)
+{
+    addText(msg.getString());
+    ui->syncWord->setText((tr("%1").arg(msg.getSyncWord(), 2, 16)));
+    ui->sText->setText(tr("%1").arg(msg.getSingalDb(), 0, 'f', 1));
+    ui->snrText->setText(tr("%1").arg(msg.getSingalDb() - msg.getNoiseDb(), 0, 'f', 1));
+}
+
 void LoRaDemodGUI::addText(const QString& text)
 {
     QDateTime dt = QDateTime::currentDateTime();
@@ -522,15 +550,8 @@ void LoRaDemodGUI::addText(const QString& text)
     ui->messageText->verticalScrollBar()->setValue(ui->messageText->verticalScrollBar()->maximum());
 }
 
-void LoRaDemodGUI::displayBytes(const QByteArray& bytes, unsigned int packetLength, bool hasCRC)
+void LoRaDemodGUI::displayBytes(const QByteArray& bytes, unsigned int packetLength)
 {
-    QByteArray bytesCopy(bytes);
-    bytesCopy.truncate(packetLength);
-    bytesCopy.replace('\0', " ");
-    QString str = QString(bytesCopy.toStdString().c_str());
-    str.chop(hasCRC ? 2 : 0);
-    addText(str);
-
     QDateTime dt = QDateTime::currentDateTime();
     QString dateStr = dt.toString("=== HH:mm:ss ===");
     QTextCursor cursor = ui->hexText->textCursor();

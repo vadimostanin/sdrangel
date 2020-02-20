@@ -26,6 +26,14 @@
 class LoRaDemodDecoderLoRa
 {
 public:
+    enum ParityStatus
+    {
+        ParityUndefined,
+        ParityError,
+        ParityCorrected,
+        ParityOK
+    };
+
     static void decodeBytes(
         QByteArray& bytes,
         const std::vector<unsigned short>& inSymbols,
@@ -34,11 +42,20 @@ public:
         bool& hasCRC,
         unsigned int& nbParityBits,
         unsigned int& packetLength,
-        bool errorCheck,
-        bool& headerParityStatus,
+        int& headerParityStatus,
         bool& headerCRCStatus,
-        bool& payloadParityStatus,
+        int& payloadParityStatus,
         bool& payloadCRCStatus
+    );
+
+    static void getCodingMetrics(
+        unsigned int nbSymbolBits,
+        unsigned int nbParityBits,
+        unsigned int packetLength,
+        bool hasHeader,
+        bool hasCRC,
+        unsigned int& numSymbols,
+        unsigned int& numCodewords
     );
 
 private:
@@ -240,8 +257,9 @@ private:
      * Decode 7 bits into a 4 bit word with single bit correction.
      * Non standard version used in sx1272.
      * Set error to true when a parity error was detected
+     * Set bad to true when the result could not be corrected
      **********************************************************************/
-    static inline unsigned char decodeHamming74sx(const unsigned char b, bool &error)
+    static inline unsigned char decodeHamming74sx(const unsigned char b, bool &error, bool &bad)
     {
         auto b0 = (b >> 0) & 0x1;
         auto b1 = (b >> 1) & 0x1;
@@ -267,10 +285,10 @@ private:
             case 0x7: return (b ^ 2) & 0xf;
             case 0x3: return (b ^ 4) & 0xf;
             case 0x6: return (b ^ 8) & 0xf;
-            case 0x0:
+            case 0x0: break;
             case 0x1:
             case 0x2:
-            case 0x4: return b & 0xF;
+            case 0x4: bad = true;
         }
 
         return b & 0xf;
